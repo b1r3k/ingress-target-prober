@@ -165,9 +165,12 @@ func main() {
 	// Allow config via env OR flags
 	flag.Parse()
 	ctx := ctrl.SetupSignalHandler()
-	ctx = log.IntoContext(ctx, ctrl.Log.WithName("runner"))
+	logger := ctrl.Log.WithName("ingress-target-prober")
+	ctx = log.IntoContext(ctx, logger)
 
 	cfg := ctrl.GetConfigOrDie()
+
+	ctrl.SetLogger(logger)
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
@@ -175,7 +178,7 @@ func main() {
 		LeaderElection:         false, // set true for HA
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
+		logger.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
@@ -187,7 +190,7 @@ func main() {
 	httpScheme := getStr("HTTP_SCHEME", *flagScheme)
 
 	if ipCSV == "" {
-		setupLog.Error(fmt.Errorf("missing required config"),
+		logger.Error(fmt.Errorf("missing required config"),
 			"set IPS (comma-separated)")
 		os.Exit(2)
 	}
@@ -214,20 +217,20 @@ func main() {
 	}
 
 	if err := mgr.Add(r); err != nil {
-		setupLog.Error(err, "unable to add runner")
+		logger.Error(err, "unable to add runner")
 		os.Exit(1)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
+		logger.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
+		logger.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager",
+	logger.Info("starting manager",
 		"ingress_class_annotation_key", ingressClassAnnKey,
 		"ingress_class", ingressClass,
 		"annotation", r.annotationKey,
@@ -237,7 +240,7 @@ func main() {
 		"scheme", httpScheme,
 	)
 	if err := mgr.Start(ctx); err != nil {
-		setupLog.Error(err, "problem running manager")
+		logger.Error(err, "problem running manager")
 		os.Exit(1)
 	}
 }

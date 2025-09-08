@@ -31,4 +31,4 @@ clean:
 	rm -rf bin
 
 build-image: ghcr-login
-	docker buildx build --platform linux/arm64,linux/amd64 -t ghcr.io/b1r3k/ingress-target-prober:$(VERSION) --push .
+	docker buildx build --platform linux/arm64,linux/amd64 -t ghcr.io/b1r3k/ingress-target-prober:$(VERSION) -t ghcr.io/b1r3k/ingress-target-prober:latest --push .
