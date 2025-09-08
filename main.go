@@ -29,9 +29,9 @@ import (
 var (
 	scheme              = runtime.NewScheme()
 	setupLog            = ctrl.Log.WithName("setup")
-	flagTargetNamespace = flag.String("target-namespace", "", "Namespace of the target Ingress")
-	flagTargetName      = flag.String("target-name", "", "Name of the target Ingress")
 	flagAnnotationKey   = flag.String("annotation-key", "external-dns.alpha.kubernetes.io/target", "Annotation key to update on the Ingress")
+	flagIngressClassAnn = flag.String("ingress-class-annotation-key", "kubernetes.io/ingress.class", "Annotation key that stores ingress class (e.g. kubernetes.io/ingress.class)")
+	flagIngressClass    = flag.String("ingress-class", "public-nginx", "Ingress class value to target (e.g. public-nginx)")
 	flagIPs             = flag.String("ips", "", "Comma-separated list of IPs to probe (e.g. 1.1.1.1,8.8.8.8)")
 	flagHTTPPath        = flag.String("http-path", "/", "HTTP path to GET on each IP")
 	flagScheme          = flag.String("http-scheme", "http", "http or https")
@@ -47,7 +47,8 @@ func init() {
 
 type Runner struct {
 	k8s           client.Client
-	targetNN      types.NamespacedName
+	ingressClassAnnotationKey string
+	ingressClass  string
 	annotationKey string
 	ips           []string
 	httpClient    *http.Client
@@ -76,7 +77,8 @@ func (r *Runner) Start(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) HealthyIP(ctx context.Context) (string, error) {
+func (r *Runner) HealthyIPs(ctx context.Context) ([]string, error) {
+	healthy := make([]string, 0, len(r.ips))
 	for _, ip := range r.ips {
 		u := fmt.Sprintf("%s://%s%s", r.urlScheme, net.JoinHostPort(ip, portForScheme(r.urlScheme)), r.httpPath)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -86,10 +88,13 @@ func (r *Runner) HealthyIP(ctx context.Context) (string, error) {
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return ip, nil
+			healthy = append(healthy, ip)
 		}
 	}
-	return "", fmt.Errorf("no healthy IP found")
+	if len(healthy) == 0 {
+		return nil, fmt.Errorf("no healthy IP found")
+	}
+	return healthy, nil
 }
 
 func portForScheme(s string) string {
@@ -100,43 +105,53 @@ func portForScheme(s string) string {
 }
 
 func (r *Runner) tick(ctx context.Context) {
-	logger := log.FromContext(ctx).WithValues("target", r.targetNN.String())
+	logger := log.FromContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, *flagTimeout*time.Duration(max(1, len(r.ips))))
 
 	defer cancel()
 
-	ip, err := r.HealthyIP(ctx)
+	healthyIPs, err := r.HealthyIPs(ctx)
 	if err != nil {
-		logger.Info("no healthy IP; leaving annotation unchanged", "error", err.Error())
+		logger.Info("no healthy IP; leaving annotations unchanged", "error", err.Error())
 		return
 	}
 
-	ing := &networkingv1.Ingress{}
-	if err := r.k8s.Get(ctx, r.targetNN, ing); err != nil {
-		logger.Error(err, "failed to get target Ingress", "ingress", r.targetNN)
+	desired := strings.Join(healthyIPs, ",")
+
+	list := &networkingv1.IngressList{}
+	if err := r.k8s.List(ctx, list); err != nil {
+		logger.Error(err, "failed to list Ingresses")
 		return
 	}
 
-	if ing.Annotations == nil {
-		ing.Annotations = map[string]string{}
+	for i := range list.Items {
+		ing := &list.Items[i]
+
+		if ing.Annotations == nil {
+			continue
+		}
+		if cls, ok := ing.Annotations[r.ingressClassAnnotationKey]; !ok || cls != r.ingressClass {
+			continue
+		}
+
+		if ing.Annotations == nil {
+			ing.Annotations = map[string]string{}
+		}
+		current := ing.Annotations[r.annotationKey]
+		if current == desired {
+			continue
+		}
+
+		patch := client.MergeFrom(ing.DeepCopy())
+		ing.Annotations[r.annotationKey] = desired
+
+		if err := r.k8s.Patch(ctx, ing, patch); err != nil {
+			logger.Error(err, "failed to patch Ingress annotation", "ingress", types.NamespacedName{Namespace: ing.Namespace, Name: ing.Name}.String(), "key", r.annotationKey, "value", desired)
+			continue
+		}
+
+		logger.Info("updated annotation", "ingress", types.NamespacedName{Namespace: ing.Namespace, Name: ing.Name}.String(), "key", r.annotationKey, "value", desired)
 	}
-	current := ing.Annotations[r.annotationKey]
-	desired := ip
-
-	if current == desired {
-		logger.Info("annotation already up-to-date", "key", r.annotationKey, "value", desired)
-		return
-	}
-
-	patch := client.MergeFrom(ing.DeepCopy())
-	ing.Annotations[r.annotationKey] = desired
-
-	if err := r.k8s.Patch(ctx, ing, patch); err != nil {
-		logger.Error(err, "failed to patch Ingress annotation", "key", r.annotationKey, "value", desired)
-		return
-	}
-
-	logger.Info("updated annotation", "ingress", r.targetNN.String(), "key", r.annotationKey, "value", desired)
 }
 
 func parseEnvOrFlag(name string, fallback *string) string {
@@ -164,16 +179,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	targetNamespace := getStr("TARGET_NAMESPACE", *flagTargetNamespace)
-	targetName := getStr("TARGET_NAME", *flagTargetName)
 	annotationKey := getStr("ANNOTATION_KEY", *flagAnnotationKey)
+	ingressClassAnnKey := getStr("INGRESS_CLASS_ANNOTATION_KEY", *flagIngressClassAnn)
+	ingressClass := getStr("INGRESS_CLASS", *flagIngressClass)
 	ipCSV := getStr("IPS", *flagIPs)
 	httpPath := getStr("HTTP_PATH", *flagHTTPPath)
 	httpScheme := getStr("HTTP_SCHEME", *flagScheme)
 
-	if targetNamespace == "" || targetName == "" || ipCSV == "" {
+	if ipCSV == "" {
 		setupLog.Error(fmt.Errorf("missing required config"),
-			"set TARGET_NAMESPACE, TARGET_NAME, IPS (comma-separated)")
+			"set IPS (comma-separated)")
 		os.Exit(2)
 	}
 
@@ -188,7 +203,8 @@ func main() {
 
 	r := &Runner{
 		k8s:           mgr.GetClient(),
-		targetNN:      types.NamespacedName{Namespace: targetNamespace, Name: targetName},
+		ingressClassAnnotationKey: ingressClassAnnKey,
+		ingressClass:  ingressClass,
 		annotationKey: annotationKey,
 		ips:           ips,
 		httpClient:    httpClient,
@@ -212,7 +228,8 @@ func main() {
 	}
 
 	setupLog.Info("starting manager",
-		"target", r.targetNN.String(),
+		"ingress_class_annotation_key", ingressClassAnnKey,
+		"ingress_class", ingressClass,
 		"annotation", r.annotationKey,
 		"ips", strings.Join(ips, ","),
 		"path", httpPath,
