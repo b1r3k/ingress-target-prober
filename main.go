@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -21,25 +20,24 @@ import (
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
-	"sigs.k8s.io/controller-runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
-	scheme                         = runtime.NewScheme()
-	setupLog                       = ctrl.Log.WithName("setup")
-	flagTargetNamespace            = flag.String("target-namespace", "", "Namespace of the target Ingress")
-	flagTargetName                 = flag.String("target-name", "", "Name of the target Ingress")
-	flagAnnotationKey              = flag.String("annotation-key", "external-dns.alpha.kubernetes.io/target", "Annotation key to update on the Ingress")
-	flagIPs                        = flag.String("ips", "", "Comma-separated list of IPs to probe (e.g. 1.1.1.1,8.8.8.8)")
-	flagHTTPPath                   = flag.String("http-path", "/", "HTTP path to GET on each IP")
-	flagScheme                     = flag.String("http-scheme", "http", "http or https")
-	flagInterval                   = flag.Duration("interval", 30*time.Second, "Probe interval")
-	flagTimeout                    = flag.Duration("timeout", 2*time.Second, "HTTP request timeout per IP")
-	flagSkipTLSVerify              = flag.Bool("insecure-skip-verify", false, "Skip TLS verification when scheme=https")
+	scheme              = runtime.NewScheme()
+	setupLog            = ctrl.Log.WithName("setup")
+	flagTargetNamespace = flag.String("target-namespace", "", "Namespace of the target Ingress")
+	flagTargetName      = flag.String("target-name", "", "Name of the target Ingress")
+	flagAnnotationKey   = flag.String("annotation-key", "external-dns.alpha.kubernetes.io/target", "Annotation key to update on the Ingress")
+	flagIPs             = flag.String("ips", "", "Comma-separated list of IPs to probe (e.g. 1.1.1.1,8.8.8.8)")
+	flagHTTPPath        = flag.String("http-path", "/", "HTTP path to GET on each IP")
+	flagScheme          = flag.String("http-scheme", "http", "http or https")
+	flagInterval        = flag.Duration("interval", 30*time.Second, "Probe interval")
+	flagTimeout         = flag.Duration("timeout", 2*time.Second, "HTTP request timeout per IP")
+	flagSkipTLSVerify   = flag.Bool("insecure-skip-verify", false, "Skip TLS verification when scheme=https")
 )
 
 func init() {
@@ -48,30 +46,32 @@ func init() {
 }
 
 type Runner struct {
-	k8s            client.Client
-	targetNN       types.NamespacedName
-	annotationKey  string
-	ips            []string
-	httpClient     *http.Client
-	urlScheme      string
-	httpPath       string
-	interval       time.Duration
+	k8s           client.Client
+	targetNN      types.NamespacedName
+	annotationKey string
+	ips           []string
+	httpClient    *http.Client
+	urlScheme     string
+	httpPath      string
+	interval      time.Duration
 }
 
 func (r *Runner) Start(ctx context.Context) error {
-	log := ctrl.Log.WithName("runner")
+    logger := log.FromContext(ctx)
+    logger.Info("runner started")
+
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
 
 	// run immediately at startup
-	r.tick(ctx, log)
+	r.tick(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			r.tick(ctx, log)
+			r.tick(ctx)
 		}
 	}
 }
@@ -99,19 +99,21 @@ func portForScheme(s string) string {
 	return "80"
 }
 
-func (r *Runner) tick(ctx context.Context, log controller_runtime.Logger) {
-	ctx, cancel := context.WithTimeout(ctx, *flagTimeout * time.Duration(max(1, len(r.ips))))
+func (r *Runner) tick(ctx context.Context) {
+	logger := log.FromContext(ctx).WithValues("target", r.targetNN.String())
+	ctx, cancel := context.WithTimeout(ctx, *flagTimeout*time.Duration(max(1, len(r.ips))))
+
 	defer cancel()
 
 	ip, err := r.HealthyIP(ctx)
 	if err != nil {
-		log.Info("no healthy IP; leaving annotation unchanged", "error", err.Error())
+		logger.Info("no healthy IP; leaving annotation unchanged", "error", err.Error())
 		return
 	}
 
 	ing := &networkingv1.Ingress{}
 	if err := r.k8s.Get(ctx, r.targetNN, ing); err != nil {
-		log.Error(err, "failed to get target Ingress", "ingress", r.targetNN)
+		logger.Error(err, "failed to get target Ingress", "ingress", r.targetNN)
 		return
 	}
 
@@ -122,7 +124,7 @@ func (r *Runner) tick(ctx context.Context, log controller_runtime.Logger) {
 	desired := ip
 
 	if current == desired {
-		log.Info("annotation already up-to-date", "key", r.annotationKey, "value", desired)
+		logger.Info("annotation already up-to-date", "key", r.annotationKey, "value", desired)
 		return
 	}
 
@@ -130,11 +132,11 @@ func (r *Runner) tick(ctx context.Context, log controller_runtime.Logger) {
 	ing.Annotations[r.annotationKey] = desired
 
 	if err := r.k8s.Patch(ctx, ing, patch); err != nil {
-		log.Error(err, "failed to patch Ingress annotation", "key", r.annotationKey, "value", desired)
+		logger.Error(err, "failed to patch Ingress annotation", "key", r.annotationKey, "value", desired)
 		return
 	}
 
-	log.Info("updated annotation", "ingress", r.targetNN.String(), "key", r.annotationKey, "value", desired)
+	logger.Info("updated annotation", "ingress", r.targetNN.String(), "key", r.annotationKey, "value", desired)
 }
 
 func parseEnvOrFlag(name string, fallback *string) string {
@@ -147,16 +149,14 @@ func parseEnvOrFlag(name string, fallback *string) string {
 func main() {
 	// Allow config via env OR flags
 	flag.Parse()
-
-	logger := zap.New(zap.UseDevMode(true))
-	ctrl.SetLogger(logger)
+	ctx := ctrl.SetupSignalHandler()
+	ctx = log.IntoContext(ctx, ctrl.Log.WithName("runner"))
 
 	cfg := ctrl.GetConfigOrDie()
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: ":8081",
-		MetricsBindAddress:     ":8080",
 		LeaderElection:         false, // set true for HA
 	})
 	if err != nil {
@@ -219,7 +219,7 @@ func main() {
 		"interval", r.interval.String(),
 		"scheme", httpScheme,
 	)
-	if err := mgr.Start(controller_runtime.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
@@ -259,7 +259,8 @@ func splitAndTrim(csv string) []string {
 	return out
 }
 func max(a, b int) int {
-	if a > b { return a }
+	if a > b {
+		return a
+	}
 	return b
 }
-
