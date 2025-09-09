@@ -43,6 +43,7 @@ var (
 	flagInterval        = flag.Duration("interval", 30*time.Second, "Probe interval")
 	flagTimeout         = flag.Duration("timeout", 2*time.Second, "HTTP request timeout per IP")
 	flagSkipTLSVerify   = flag.Bool("insecure-skip-verify", false, "Skip TLS verification when scheme=https")
+	flagHostHeader      = flag.String("host-header", "", "Host header to send with HTTP requests")
 	flagVersion         = flag.Bool("version", false, "Print version information and exit")
 )
 
@@ -60,6 +61,7 @@ type Runner struct {
 	httpClient                *http.Client
 	urlScheme                 string
 	httpPath                  string
+	hostHeader                string
 	interval                  time.Duration
 }
 
@@ -84,17 +86,31 @@ func (r *Runner) Start(ctx context.Context) error {
 }
 
 func (r *Runner) HealthyIPs(ctx context.Context) ([]string, error) {
+	logger := log.FromContext(ctx)
 	healthy := make([]string, 0, len(r.ips))
 	for _, ip := range r.ips {
 		u := fmt.Sprintf("%s://%s%s", r.urlScheme, net.JoinHostPort(ip, portForScheme(r.urlScheme)), r.httpPath)
+		logger.Info("probing IP", "ip", ip, "url", u)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+
+		// Set Host header if specified
+		if r.hostHeader != "" {
+			req.Host = r.hostHeader
+			logger.Info("setting Host header", "ip", ip, "host", r.hostHeader)
+		}
+
 		resp, err := r.httpClient.Do(req)
 		if err != nil {
+			logger.Info("HTTP request failed", "ip", ip, "url", u, "error", err.Error())
 			continue
 		}
 		_ = resp.Body.Close()
+		logger.Info("HTTP response received", "ip", ip, "url", u, "status_code", resp.StatusCode)
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			healthy = append(healthy, ip)
+			logger.Info("IP marked as healthy", "ip", ip)
+		} else {
+			logger.Info("IP marked as unhealthy due to status code", "ip", ip, "status_code", resp.StatusCode)
 		}
 	}
 	if len(healthy) == 0 {
@@ -104,7 +120,7 @@ func (r *Runner) HealthyIPs(ctx context.Context) ([]string, error) {
 }
 
 func portForScheme(s string) string {
-	if s == "https" {
+	if strings.ToLower(s) == "https" {
 		return "443"
 	}
 	return "80"
@@ -112,8 +128,11 @@ func portForScheme(s string) string {
 
 func (r *Runner) tick(ctx context.Context) {
 	logger := log.FromContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, *flagTimeout*time.Duration(max(1, len(r.ips))))
-
+	// Use a reasonable timeout for the entire health check operation
+	// Allow enough time for all IPs to be checked with some buffer
+	timeout := *flagTimeout * time.Duration(max(1, len(r.ips)))
+	logger.Info("starting health check", "timeout", timeout.String(), "ips_count", len(r.ips))
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	healthyIPs, err := r.HealthyIPs(ctx)
@@ -206,6 +225,7 @@ func main() {
 	ipCSV := getStr("IPS", *flagIPs)
 	httpPath := getStr("HTTP_PATH", *flagHTTPPath)
 	httpScheme := getStr("HTTP_SCHEME", *flagScheme)
+	hostHeader := getStr("HOST_HEADER", *flagHostHeader)
 
 	if ipCSV == "" {
 		logger.Error(fmt.Errorf("missing required config"),
@@ -231,6 +251,7 @@ func main() {
 		httpClient:                httpClient,
 		urlScheme:                 httpScheme,
 		httpPath:                  httpPath,
+		hostHeader:                hostHeader,
 		interval:                  getDuration("INTERVAL", *flagInterval),
 	}
 
@@ -259,6 +280,7 @@ func main() {
 		"path", httpPath,
 		"interval", r.interval.String(),
 		"scheme", httpScheme,
+		"host_header", hostHeader,
 	)
 	if err := mgr.Start(ctx); err != nil {
 		logger.Error(err, "problem running manager")
