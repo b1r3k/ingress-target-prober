@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func (r *Runner) HealthyIPs(ctx context.Context) ([]string, error) {
 				Transport: tr,
 				Timeout:   r.httpClient.Timeout,
 			}
-			logger.Info("using custom TLS config for IP address", "ip", ip)
+			logger.Info("skipped TLS verification for IP address", "ip", ip)
 		}
 
 		resp, err := client.Do(req)
@@ -178,7 +179,7 @@ func (r *Runner) tick(ctx context.Context) {
 			ing.Annotations = map[string]string{}
 		}
 		current := ing.Annotations[r.annotationKey]
-		if current == desired {
+		if normalizeIPList(current) == normalizeIPList(desired) {
 			continue
 		}
 
@@ -346,4 +347,16 @@ func max(a, b int) int {
 // isIPAddress checks if the given string is a valid IP address (IPv4 or IPv6)
 func isIPAddress(s string) bool {
 	return net.ParseIP(s) != nil
+}
+
+// normalizeIPList normalizes a comma-separated list of IPs by sorting them
+// This ensures that IP order doesn't matter when comparing lists
+func normalizeIPList(ipList string) string {
+	if ipList == "" {
+		return ""
+	}
+	
+	ips := splitAndTrim(ipList)
+	sort.Strings(ips)
+	return strings.Join(ips, ",")
 }
