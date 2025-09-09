@@ -99,7 +99,22 @@ func (r *Runner) HealthyIPs(ctx context.Context) ([]string, error) {
 			logger.Info("setting Host header", "ip", ip, "host", r.hostHeader)
 		}
 
-		resp, err := r.httpClient.Do(req)
+		// Create a custom HTTP client for this request if we need to skip TLS verification for IP addresses
+		client := r.httpClient
+		if r.urlScheme == "https" && isIPAddress(ip) {
+			// For HTTPS requests to IP addresses, we need to skip TLS verification
+			// because certificates are typically issued for hostnames, not IP addresses
+			tr := &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
+			client = &http.Client{
+				Transport: tr,
+				Timeout:   r.httpClient.Timeout,
+			}
+			logger.Info("using custom TLS config for IP address", "ip", ip)
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			logger.Info("HTTP request failed", "ip", ip, "url", u, "error", err.Error())
 			continue
@@ -326,4 +341,9 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// isIPAddress checks if the given string is a valid IP address (IPv4 or IPv6)
+func isIPAddress(s string) bool {
+	return net.ParseIP(s) != nil
 }
