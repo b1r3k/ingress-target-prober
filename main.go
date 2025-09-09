@@ -28,6 +28,11 @@ import (
 )
 
 var (
+	// Version information set at build time via ldflags
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+
 	scheme              = runtime.NewScheme()
 	flagAnnotationKey   = flag.String("annotation-key", "external-dns.alpha.kubernetes.io/target", "Annotation key to update on the Ingress")
 	flagIngressClassAnn = flag.String("ingress-class-annotation-key", "kubernetes.io/ingress.class", "Annotation key that stores ingress class (e.g. kubernetes.io/ingress.class)")
@@ -38,6 +43,7 @@ var (
 	flagInterval        = flag.Duration("interval", 30*time.Second, "Probe interval")
 	flagTimeout         = flag.Duration("timeout", 2*time.Second, "HTTP request timeout per IP")
 	flagSkipTLSVerify   = flag.Bool("insecure-skip-verify", false, "Skip TLS verification when scheme=https")
+	flagVersion         = flag.Bool("version", false, "Print version information and exit")
 )
 
 func init() {
@@ -161,9 +167,21 @@ func parseEnvOrFlag(name string, fallback *string) string {
 	return *fallback
 }
 
+// VersionInfo returns version information as a string
+func VersionInfo() string {
+	return fmt.Sprintf("version=%s commit=%s date=%s", version, commit, date)
+}
+
 func main() {
 	// Allow config via env OR flags
 	flag.Parse()
+
+	// Handle version flag
+	if *flagVersion {
+		fmt.Println(VersionInfo())
+		os.Exit(0)
+	}
+
 	// Initialize logger before deriving any named loggers
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	ctx := ctrl.SetupSignalHandler()
@@ -231,6 +249,9 @@ func main() {
 	}
 
 	logger.Info("starting manager",
+		"version", version,
+		"commit", commit,
+		"build_date", date,
 		"ingress_class_annotation_key", ingressClassAnnKey,
 		"ingress_class", ingressClass,
 		"annotation", r.annotationKey,
