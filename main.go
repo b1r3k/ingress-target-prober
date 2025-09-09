@@ -24,11 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	zap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 var (
 	scheme              = runtime.NewScheme()
-	setupLog            = ctrl.Log.WithName("setup")
 	flagAnnotationKey   = flag.String("annotation-key", "external-dns.alpha.kubernetes.io/target", "Annotation key to update on the Ingress")
 	flagIngressClassAnn = flag.String("ingress-class-annotation-key", "kubernetes.io/ingress.class", "Annotation key that stores ingress class (e.g. kubernetes.io/ingress.class)")
 	flagIngressClass    = flag.String("ingress-class", "public-nginx", "Ingress class value to target (e.g. public-nginx)")
@@ -46,20 +46,20 @@ func init() {
 }
 
 type Runner struct {
-	k8s           client.Client
+	k8s                       client.Client
 	ingressClassAnnotationKey string
-	ingressClass  string
-	annotationKey string
-	ips           []string
-	httpClient    *http.Client
-	urlScheme     string
-	httpPath      string
-	interval      time.Duration
+	ingressClass              string
+	annotationKey             string
+	ips                       []string
+	httpClient                *http.Client
+	urlScheme                 string
+	httpPath                  string
+	interval                  time.Duration
 }
 
 func (r *Runner) Start(ctx context.Context) error {
-    logger := log.FromContext(ctx)
-    logger.Info("runner started")
+	logger := log.FromContext(ctx)
+	logger.Info("runner started")
 
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
@@ -164,13 +164,13 @@ func parseEnvOrFlag(name string, fallback *string) string {
 func main() {
 	// Allow config via env OR flags
 	flag.Parse()
+	// Initialize logger before deriving any named loggers
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	ctx := ctrl.SetupSignalHandler()
 	logger := ctrl.Log.WithName("ingress-target-prober")
 	ctx = log.IntoContext(ctx, logger)
 
 	cfg := ctrl.GetConfigOrDie()
-
-	ctrl.SetLogger(logger)
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
@@ -205,15 +205,15 @@ func main() {
 	}
 
 	r := &Runner{
-		k8s:           mgr.GetClient(),
+		k8s:                       mgr.GetClient(),
 		ingressClassAnnotationKey: ingressClassAnnKey,
-		ingressClass:  ingressClass,
-		annotationKey: annotationKey,
-		ips:           ips,
-		httpClient:    httpClient,
-		urlScheme:     httpScheme,
-		httpPath:      httpPath,
-		interval:      getDuration("INTERVAL", *flagInterval),
+		ingressClass:              ingressClass,
+		annotationKey:             annotationKey,
+		ips:                       ips,
+		httpClient:                httpClient,
+		urlScheme:                 httpScheme,
+		httpPath:                  httpPath,
+		interval:                  getDuration("INTERVAL", *flagInterval),
 	}
 
 	if err := mgr.Add(r); err != nil {

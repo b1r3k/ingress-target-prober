@@ -1,4 +1,4 @@
-VERSION := 0.1.0
+VERSION := 0.1.2
 APP=ingress-target-prober
 PKG=ghcr.io/b1r3k/ingress-target-prober
 GHCR_REPO_URI=ghcr.io
@@ -9,7 +9,7 @@ GHCR_REPO_USER=b1r3k
 ghcr-login:
 	keyring get $(APP) ghcr_registry | docker login $(GHCR_REPO_URI) --username $(GHCR_REPO_USER) --password-stdin
 
-build:
+build: tidy fmt vet test
 	go build -ldflags="-X main.version=$$(git describe --tags --always 2>/dev/null || echo dev)" -o bin/$(APP) ./main.go
 
 run:
